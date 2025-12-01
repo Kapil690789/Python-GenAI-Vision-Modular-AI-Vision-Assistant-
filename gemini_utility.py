@@ -1,103 +1,129 @@
 import os
+import json
 import logging
-from typing import Optional, Union, List  # Type Hinting tools
+from typing import Optional, Dict
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from PIL import Image
+import requests 
+import io 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("app.log"),
-        logging.StreamHandler()
-    ]
-)
+# Logging Setup
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 class GeminiProcessor:
     def __init__(self):
-        """
-        Initialize the Gemini Client. 
-        This is called automatically when you create an instance of the class.
-        """
         load_dotenv()
-        self.api_key: Optional[str] = os.getenv("GOOGLE_API_KEY")
-        
+        self.api_key = os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
-            logger.error("GOOGLE_API_KEY not found in environment variables!")
-            raise ValueError("Missing API Key")
-            
-        try:
-            self.client = genai.Client(api_key=self.api_key)
-            logger.info("Gemini Client connected successfully.")
-        except Exception as e:
-            logger.critical(f"Failed to connect to Google API: {e}")
-            raise
+            raise ValueError("API Key Missing")
+        self.client = genai.Client(api_key=self.api_key)
+        self.model_name = "gemini-2.0-flash"
 
-    def analyze_image(self, image_path: str, prompt: str = "Describe this image") -> Optional[str]:
-        """
-        Sends an image to Gemini and returns the text description.
-        
-        Args:
-            image_path (str): The file path to the image.
-            prompt (str): The instruction for the model.
-            
-        Returns:
-            Optional[str]: The description text, or None if it fails.
-        """
-
-        logger.info(f"Processing image: {image_path}")
-
+    # FUNCTION 1: Img2Text (General Description)--
+    def img_to_text(self, image_path: str, prompt: str) -> Optional[str]:
         try:
             image = Image.open(image_path)
-        except FileNotFoundError:
-            logger.error(f"File not found: {image_path}")
-            return None
-        except Exception as e:
-            logger.error(f"Error opening image: {e}")
-            return None
-        
-        try:
-            logger.info("Sending request to Gemini model...")
             response = self.client.models.generate_content(
-            model = "gemini-2.0-flash",
-            config = types.GenerateContentConfig(
-                system_instruction="You are a Technical AI Vision Assistant. Be precise.",
-                    temperature=0.5,
-            ),
-            contents=[image, prompt]
+                model=self.model_name,
+                contents=[image, prompt]
             )
-            logger.info("Response received successfully.")
             return response.text
         except Exception as e:
-            logger.error(f"API Error during generation: {e}")
+            logger.error(f"Img2Text Error: {e}")
             return None
-    
-    def save_to_file(self, text: str, filename: str = "result.md") -> bool:
-        """Saves text to a markdown file safely."""
+
+    def img_to_json(self, image_path: str) -> Optional[Dict]:
+        prompt = """
+        Analyze image. Return ONLY raw JSON (no backticks):
+        {"item": "str", "color": "str", "material": "str", "brand_guess": "str"}
+        """
         try:
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(text)
-            logger.info(f"Result saved to {filename}")
-            return True
+            image = Image.open(image_path)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[image, prompt]
+            )
+            clean_json = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_json)
         except Exception as e:
-            logger.error(f"Failed to save file: {e}")
-            return False
+            logger.error(f"Img2Json Error: {e}")
+            return None
 
-
-if __name__ == "__main__":
-    processor = GeminiProcessor()
     
-    my_image = "input_images/ferraribadge.png"
-    my_prompt = "Describe the lighting and composition of this image."
+    def text_to_text(self, prompt : str) -> Optional[str]:
+        try:
+            response = self.client.models.generate_content(
+                model = self.model_name,
+                contents  = prompt
+            )
+            return response.text;
+        except Exception as e:
+            logger.error(f"Text2Text Error: {e}")
+            return None
 
-    result_text = processor.analyze_image(my_image,my_prompt)
+    # def generate_image(self, prompt: str) -> Optional[str]:
+    #     """
+    #     Generates an image using Google's Imagen model.
+    #     Returns the path to the saved image.
+    #     """
+    #     try:
+    #         # Note: Model name might change based on your access (e.g., 'imagen-3.0-generate-001')
+    #         # If 'imagen-3.0' doesn't work, try 'imagen-2.0'
+    #         target_model = "imagen-2.0-generate-001" 
+            
+    #         response = self.client.models.generate_image(
+    #             model=target_model,
+    #             prompt=prompt,
+    #             config=types.GenerateImageConfig(
+    #                 number_of_images=1,
+    #             )
+    #         )
+            
+    #         # Google returns raw bytes, we need to save it
+    #         if response.generated_images:
+    #             image_bytes = response.generated_images[0].image.image_bytes
+                
+    #             # Save locally
+    #             output_file = "generated_image.png"
+    #             with open(output_file, "wb") as f:
+    #                 f.write(image_bytes)
+    #             return output_file
+                
+    #         return None
+            
+    #     except Exception as e:
+    #         logger.error(f"Text2Image Error: {e}")
+    #         return None
 
-    if result_text:
-        processor.save_to_file(result_text)
-    else:
-        logger.warning("No result was generated.")
-
-        
+    def generate_image(self, prompt: str) -> Optional[str]:
+        """
+        Generates an image using Pollinations.ai (No API Key required).
+        """
+        try:
+            # Pollinations URL format: https://image.pollinations.ai/prompt/{your_prompt}
+            # We replace spaces with %20 just to be safe, though requests handles it.
+            clean_prompt = prompt.replace(" ", "%20")
+            url = f"https://image.pollinations.ai/prompt/{clean_prompt}"
+            
+            logger.info(f"Generating image from: {url}")
+            
+            # Fetch the image
+            response = requests.get(url)
+            
+            if response.status_code == 200:
+                # Save locally
+                output_file = "generated_image.png"
+                with open(output_file, "wb") as f:
+                    f.write(response.content)
+                logger.info("Image saved successfully.")
+                return output_file
+            else:
+                logger.error(f"Pollinations Error: {response.status_code}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Text2Image Error: {e}")
+            return None
